@@ -14,11 +14,11 @@
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,sans-serif;}
-  header{padding:16px 14px 8px;text-align:center;}
-  header h1{margin:0;font-size:1.3rem;}
-  header p{margin:4px 0 0;color:var(--muted);font-size:.85rem;}
-  .tabs{display:flex;gap:6px;padding:8px;overflow-x:auto;}
-  .tab{flex:1;padding:10px 8px;text-align:center;border-radius:10px;background:var(--card);border:1px solid var(--border);cursor:pointer;font-size:.85rem;white-space:nowrap;}
+  header{padding:14px 14px 6px;text-align:center;}
+  header h1{margin:0;font-size:1.25rem;}
+  header p{margin:4px 0 0;color:var(--muted);font-size:.8rem;}
+  .tabs{display:flex;gap:5px;padding:8px;overflow-x:auto;}
+  .tab{flex:1;padding:9px 6px;text-align:center;border-radius:10px;background:var(--card);border:1px solid var(--border);cursor:pointer;font-size:.78rem;white-space:nowrap;}
   .tab.active{background:var(--accent);color:#fff;border-color:var(--accent);}
   main{padding:8px 14px 40px;max-width:640px;margin:0 auto;}
   .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;}
@@ -26,7 +26,7 @@
   .name{font-weight:600;overflow-wrap:anywhere;}
   .stock{font-variant-numeric:tabular-nums;white-space:nowrap;}
   .low{color:var(--danger);font-weight:700;}
-  input[type=number],input[type=text]{
+  input[type=number],input[type=text],input[type=date]{
     width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);
     background:var(--bg);color:var(--ink);font-size:1rem;min-width:0;
   }
@@ -37,8 +37,9 @@
   .qtybox input{width:80px;flex:none;}
   .muted{color:var(--muted);font-size:.8rem;}
   .divider{border-top:1px solid var(--border);margin:10px 0;}
-  .histrow{display:flex;justify-content:space-between;font-size:.9rem;padding:4px 0;border-bottom:1px dashed var(--border);gap:8px;}
-  .histrow:last-child{border-bottom:none;}
+  .logrow{display:flex;justify-content:space-between;font-size:.85rem;padding:4px 0;border-bottom:1px dashed var(--border);gap:8px;}
+  .logrow:last-child{border-bottom:none;}
+  .logrow .time{color:var(--muted);font-variant-numeric:tabular-nums;}
   .totals{font-weight:700;margin-top:6px;}
   .empty{color:var(--muted);text-align:center;padding:20px 0;}
   .addform{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;}
@@ -47,6 +48,11 @@
   .toast.show{opacity:1;}
   .errmsg{color:var(--danger);font-size:.8rem;margin-top:4px;}
   .full{width:100%;}
+  .pill{display:inline-block;background:rgba(201,117,47,.15);color:var(--accent);border-radius:20px;padding:2px 10px;font-size:.75rem;font-weight:600;}
+  .datebar{display:flex;gap:8px;align-items:center;margin-bottom:4px;}
+  .datebar input{flex:1;}
+  .top1{background:rgba(122,154,92,.15);border-radius:10px;padding:8px 10px;margin-bottom:6px;}
+  .badge{background:var(--accent2);color:#fff;border-radius:8px;padding:1px 7px;font-size:.7rem;margin-right:6px;}
 </style>
 </head>
 <body>
@@ -56,6 +62,7 @@
 </header>
 <div class="tabs">
   <div class="tab" data-tab="tsex">🏭 Tsex</div>
+  <div class="tab" data-tab="tarix">📅 Tarix</div>
   <div class="tab" data-tab="kassa">🧾 Smena</div>
   <div class="tab" data-tab="boss">📊 Boshliq</div>
 </div>
@@ -63,17 +70,53 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const STORAGE_KEY = 'shirinlik_ombor_v1';
+const STORAGE_KEY = 'shirinlik_ombor_v2';
+const LOW_STOCK = 5;
 let state = loadState();
 let activeTab = 'tsex';
+let tarixDate = todayStr();
 let submitting = false;
 
+// ---------- Holatni yuklash / migratsiya ----------
 function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
+    if(raw) return normalize(JSON.parse(raw));
   }catch(e){ console.error('State o\'qishda xato', e); }
-  return { products:{}, history:{} };
+  // eski versiyadan (v1) migratsiya qilishga urinamiz
+  try{
+    const oldRaw = localStorage.getItem('shirinlik_ombor_v1');
+    if(oldRaw){
+      const old = JSON.parse(oldRaw);
+      return migrateFromV1(old);
+    }
+  }catch(e){ /* ignore */ }
+  return { products:{}, batches:[], shifts:{} };
+}
+
+function normalize(s){
+  s.products = s.products || {};
+  s.batches = s.batches || [];
+  s.shifts = s.shifts || {};
+  return s;
+}
+
+function migrateFromV1(old){
+  const products = {};
+  Object.entries(old.products||{}).forEach(([id,p])=>{
+    products[id] = {name:p.name, price:p.price||0, stock:p.stock||0};
+  });
+  const shifts = {};
+  Object.entries(old.history||{}).forEach(([date,h])=>{
+    shifts[date] = {
+      entries: (h.records||[]).map(r=>({
+        productId: null, productName: r.product, incoming: r.incoming||0,
+        startStock: r.startStock||0, endCounted: r.endCounted, sold: r.sold||0, revenue: r.revenue||0
+      })),
+      total: h.total||0, closedAt: h.updatedAt||Date.now()
+    };
+  });
+  return { products, batches:[], shifts };
 }
 
 function saveState(){
@@ -87,13 +130,22 @@ function saveState(){
   }
 }
 
+// ---------- Yordamchi funksiyalar ----------
+function pad(n){ return String(n).padStart(2,'0'); }
 function todayStr(){
   const d = new Date();
-  const tz = d.getTimezoneOffset();
-  return new Date(d.getTime() - tz*60000).toISOString().slice(0,10);
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 }
-document.getElementById('dateLabel').textContent =
-  new Date().toLocaleDateString('uz-UZ', {day:'numeric', month:'long', year:'numeric'});
+function nowTime(){
+  const d = new Date();
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fmtDate(dateStr){
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  return dt.toLocaleDateString('uz-UZ', {day:'numeric', month:'long', year:'numeric'});
+}
+document.getElementById('dateLabel').textContent = fmtDate(todayStr());
 
 let toastTimer = null;
 function showToast(msg){
@@ -130,10 +182,12 @@ function fmt(n){
   return Math.round(v).toLocaleString('uz-UZ');
 }
 
+// ---------- Tab almashish ----------
 document.querySelectorAll('.tab').forEach(t=>{
   t.addEventListener('click', ()=>{ activeTab = t.dataset.tab; render(); });
 });
 
+// ---------- Mahsulot boshqaruvi ----------
 function addProduct(){
   const errEl = document.getElementById('addProductError');
   if(errEl) errEl.textContent = '';
@@ -145,23 +199,18 @@ function addProduct(){
     const parsed = num(priceEl.value, {min:0, allowFloat:true});
     if(parsed === null){
       if(errEl) errEl.textContent = 'Narx manfiy bo\'lmasligi kerak';
-      priceEl.focus();
-      return;
+      priceEl.focus(); return;
     }
     price = parsed;
   }
   if(!name){
     if(errEl) errEl.textContent = 'Mahsulot nomini kiriting';
-    nameEl.focus();
-    return;
+    nameEl.focus(); return;
   }
   const exists = Object.values(state.products).some(p => (p.name||'').trim().toLowerCase() === name.toLowerCase());
-  if(exists){
-    if(errEl) errEl.textContent = 'Bu mahsulot allaqachon mavjud';
-    return;
-  }
+  if(exists){ if(errEl) errEl.textContent = 'Bu mahsulot allaqachon mavjud'; return; }
   const id = slug(name);
-  state.products[id] = {name, price, stock:0, incoming:0};
+  state.products[id] = {name, price, stock:0};
   if(saveState()){
     nameEl.value=''; priceEl.value='';
     showToast('Qo\'shildi: ' + name);
@@ -169,6 +218,15 @@ function addProduct(){
   }
 }
 
+function deleteProduct(id){
+  const p = state.products[id];
+  if(!p) return;
+  if(!confirm('O\'chirilsinmi: ' + p.name + '? (Tarix saqlanib qoladi)')) return;
+  delete state.products[id];
+  if(saveState()){ showToast('O\'chirildi'); render(); }
+}
+
+// ---------- Tsex: partiya qo'shish (log bilan) ----------
 function addBatch(id){
   const input = document.getElementById('batch-'+id);
   if(!input) return;
@@ -176,23 +234,26 @@ function addBatch(id){
   if(qty === null){ showToast('Miqdorni to\'g\'ri kiriting (1 dan katta)'); return; }
   const p = state.products[id];
   if(!p){ showToast('Mahsulot topilmadi'); return; }
+  const date = todayStr();
+  const time = nowTime();
+  state.batches.push({
+    id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+    date, time, ts: Date.now(),
+    productId: id, productName: p.name, qty
+  });
   p.stock = (p.stock||0) + qty;
-  p.incoming = (p.incoming||0) + qty;
   if(saveState()){
-    input.value='';
-    showToast(p.name + ': +' + qty + ' ta');
+    input.value = '';
+    showToast(p.name + ': +' + qty + ' ta (' + time + ')');
     render();
   }
 }
 
-function deleteProduct(id){
-  const p = state.products[id];
-  if(!p) return;
-  if(!confirm('O\'chirilsinmi: ' + p.name + '?')) return;
-  delete state.products[id];
-  if(saveState()){ showToast('O\'chirildi'); render(); }
+function batchesForDate(date){
+  return state.batches.filter(b => b.date === date).sort((a,b)=> a.ts - b.ts);
 }
 
+// ---------- Smena yopish ----------
 function submitShift(){
   if(submitting) return;
   const ids = Object.keys(state.products);
@@ -209,10 +270,7 @@ function submitShift(){
     }
     entries.push({id, counted});
   }
-  if(entries.length === 0){
-    showToast('Kamida bitta mahsulot uchun qoldiqni kiriting');
-    return;
-  }
+  if(entries.length === 0){ showToast('Kamida bitta mahsulot uchun qoldiqni kiriting'); return; }
 
   submitting = true;
   const btn = document.getElementById('submitShiftBtn');
@@ -220,37 +278,37 @@ function submitShift(){
 
   try{
     const date = todayStr();
-    const newRecords = [];
+    const todaysBatches = batchesForDate(date);
+    const newEntries = [];
     let total = 0;
 
     for(const {id, counted} of entries){
       const p = state.products[id];
       if(!p) continue;
+      const incoming = todaysBatches.filter(b=>b.productId===id).reduce((s,b)=>s+b.qty,0);
       const stockBefore = p.stock || 0;
-      const incoming = p.incoming || 0;
       const sold = Math.max(0, stockBefore - counted);
       const revenue = sold * (p.price || 0);
       total += revenue;
-      newRecords.push({
-        product: p.name,
-        startStock: stockBefore - incoming,
-        incoming,
-        endCounted: counted,
-        sold,
-        revenue
+      newEntries.push({
+        productId: id, productName: p.name,
+        incoming, startStock: stockBefore - incoming,
+        endCounted: counted, sold, revenue
       });
       p.stock = counted;
-      p.incoming = 0;
     }
 
-    if(newRecords.length === 0){ showToast('Hech narsa saqlanmadi'); return; }
+    if(newEntries.length === 0){ showToast('Hech narsa saqlanmadi'); return; }
 
-    const prev = state.history[date] || {records:[], total:0};
-    prev.records = (prev.records||[]).concat(newRecords);
-    prev.total = (prev.total||0) + total;
-    prev.closed = true;
-    prev.updatedAt = Date.now();
-    state.history[date] = prev;
+    const prev = state.shifts[date] || {entries:[], total:0};
+    // bir xil mahsulot uchun avvalgi yozuv bo'lsa, uni yangisi bilan almashtiramiz (bir kunda bir necha marta yopish holati uchun)
+    const byProduct = {};
+    (prev.entries||[]).forEach(e => byProduct[e.productId || e.productName] = e);
+    newEntries.forEach(e => byProduct[e.productId || e.productName] = e);
+    const mergedEntries = Object.values(byProduct);
+    const mergedTotal = mergedEntries.reduce((s,e)=>s+e.revenue,0);
+
+    state.shifts[date] = { entries: mergedEntries, total: mergedTotal, closedAt: Date.now() };
 
     if(saveState()){
       showToast('Otchyot saqlandi ✅');
@@ -263,6 +321,27 @@ function submitShift(){
   }
 }
 
+// ---------- Top mahsulotlar (barcha vaqt) ----------
+function allTimeTop(limit=5){
+  const agg = {};
+  Object.values(state.shifts).forEach(sh=>{
+    (sh.entries||[]).forEach(e=>{
+      const key = e.productName;
+      if(!agg[key]) agg[key] = {name:key, sold:0, revenue:0};
+      agg[key].sold += e.sold||0;
+      agg[key].revenue += e.revenue||0;
+    });
+  });
+  return Object.values(agg).sort((a,b)=>b.sold-a.sold).slice(0,limit);
+}
+
+function topForDate(date){
+  const sh = state.shifts[date];
+  if(!sh || !sh.entries || sh.entries.length===0) return [];
+  return [...sh.entries].sort((a,b)=>(b.sold||0)-(a.sold||0));
+}
+
+// ---------- Voqealar (delegatsiya) ----------
 document.getElementById('main').addEventListener('click', (e)=>{
   const addBtn = e.target.closest('[data-action="add-batch"]');
   if(addBtn){ addBatch(addBtn.dataset.id); return; }
@@ -275,12 +354,17 @@ document.getElementById('main').addEventListener('click', (e)=>{
 });
 document.getElementById('main').addEventListener('keydown', (e)=>{
   if(e.key !== 'Enter') return;
-  if(e.target.matches('input[id^="batch-"]')){
-    addBatch(e.target.id.replace('batch-',''));
-  }
+  if(e.target.matches('input[id^="batch-"]')){ addBatch(e.target.id.replace('batch-','')); }
   if(e.target.id === 'newName' || e.target.id === 'newPrice'){ addProduct(); }
 });
+document.getElementById('main').addEventListener('change', (e)=>{
+  if(e.target.id === 'tarixDateInput'){
+    tarixDate = e.target.value || todayStr();
+    render();
+  }
+});
 
+// ---------- Render ----------
 function render(){
   const main = document.getElementById('main');
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===activeTab));
@@ -289,13 +373,23 @@ function render(){
     (products[a].name||'').localeCompare(products[b].name||'', 'uz'));
 
   if(activeTab === 'tsex'){
+    const today = todayStr();
+    const todaysBatches = batchesForDate(today);
+    const byProductToday = {};
+    todaysBatches.forEach(b=>{
+      if(!byProductToday[b.productId]) byProductToday[b.productId] = {qty:0, count:0};
+      byProductToday[b.productId].qty += b.qty;
+      byProductToday[b.productId].count += 1;
+    });
+
     main.innerHTML = `
-      <div class="card"><div class="muted">Yangi partiya keldi — miqdorni kiriting va qo'shing</div></div>
+      <div class="card"><div class="muted">Yangi partiya keldi — miqdorni kiriting va qo'shing. Har bir qo'shish vaqti bilan yoziladi.</div></div>
       ${ids.length===0 ? '<div class="empty">Hali mahsulot yo\'q.<br>Boshliq bo\'limidan qo\'shing.</div>' : ''}
       ${ids.map(id=>{
         const p = products[id];
         const stock = p.stock||0;
-        const low = stock <= 5;
+        const low = stock <= LOW_STOCK;
+        const t = byProductToday[id];
         return `<div class="card">
           <div class="row">
             <div class="name">${escapeHtml(p.name)}</div>
@@ -305,8 +399,61 @@ function render(){
             <input type="number" id="batch-${id}" placeholder="miqdor" min="1" inputmode="numeric">
             <button data-action="add-batch" data-id="${id}">＋ Qo'shish</button>
           </div>
+          ${t ? `<div class="muted" style="margin-top:6px">Bugun yuborilgan: <b>${t.qty} ta</b> (${t.count} marta)</div>` : ''}
         </div>`;
       }).join('')}
+      ${todaysBatches.length>0 ? `<div class="card">
+        <div class="name">Bugungi partiyalar jurnali</div>
+        <div class="divider"></div>
+        ${todaysBatches.slice().reverse().map(b=>`<div class="logrow"><span class="time">${b.time}</span><span>${escapeHtml(b.productName)}</span><span>+${b.qty} ta</span></div>`).join('')}
+      </div>` : ''}
+    `;
+    return;
+  }
+
+  if(activeTab === 'tarix'){
+    const dayBatches = batchesForDate(tarixDate);
+    const byProduct = {};
+    dayBatches.forEach(b=>{
+      if(!byProduct[b.productId]) byProduct[b.productId] = {name:b.productName, qty:0, count:0};
+      byProduct[b.productId].qty += b.qty;
+      byProduct[b.productId].count += 1;
+    });
+    const totalIncoming = dayBatches.reduce((s,b)=>s+b.qty,0);
+    const shift = state.shifts[tarixDate];
+    const top = topForDate(tarixDate);
+
+    main.innerHTML = `
+      <div class="card">
+        <div class="datebar">
+          <label class="muted" style="white-space:nowrap">Sana:</label>
+          <input type="date" id="tarixDateInput" value="${tarixDate}">
+        </div>
+        <div class="muted">${fmtDate(tarixDate)}</div>
+      </div>
+
+      <div class="card">
+        <div class="row"><div class="name">Kelgan partiyalar</div><span class="pill">${dayBatches.length} marta · ${totalIncoming} ta</span></div>
+        <div class="divider"></div>
+        ${Object.keys(byProduct).length===0 ? '<div class="empty">Bu kunda partiya kelmagan</div>' : Object.values(byProduct).map(p=>
+          `<div class="logrow"><span>${escapeHtml(p.name)}</span><span>${p.count} marta — <b>${p.qty} ta</b></span></div>`
+        ).join('')}
+        ${dayBatches.length>0 ? `<div class="divider"></div><div class="muted">Barcha yozuvlar:</div>
+          ${dayBatches.map(b=>`<div class="logrow"><span class="time">${b.time}</span><span>${escapeHtml(b.productName)}</span><span>+${b.qty} ta</span></div>`).join('')}` : ''}
+      </div>
+
+      <div class="card">
+        <div class="name">Kunlik natija (smena)</div>
+        <div class="divider"></div>
+        ${!shift ? '<div class="empty">Bu kun uchun hali smena yopilmagan</div>' : `
+          ${top.map((e,i)=>`<div class="${i===0?'top1':'logrow'}">
+            ${i===0?'<span class="badge">🏆 TOP</span>':''}
+            <span>${escapeHtml(e.productName)} — kelgan ${e.incoming}, sotildi <b>${e.sold}</b></span>
+            <span>${fmt(e.revenue)} so'm</span>
+          </div>`).join('')}
+          <div class="totals">Jami: ${fmt(shift.total||0)} so'm</div>
+        `}
+      </div>
     `;
     return;
   }
@@ -320,7 +467,7 @@ function render(){
         return `<div class="card">
           <div class="row">
             <div class="name">${escapeHtml(p.name)}</div>
-            <div class="muted">Kutilgan: ${p.stock||0} ta · ${fmt(p.price)} so'm/dona</div>
+            <div class="muted">Hozirgi: ${p.stock||0} ta · ${fmt(p.price)} so'm/dona</div>
           </div>
           <input type="number" id="count-${id}" placeholder="haqiqiy qoldiq" min="0" inputmode="numeric">
         </div>`;
@@ -331,7 +478,7 @@ function render(){
   }
 
   if(activeTab === 'boss'){
-    const dates = Object.keys(state.history).sort().reverse();
+    const top = allTimeTop(5);
     main.innerHTML = `
       <div class="card">
         <div class="name">Yangi mahsulot qo'shish</div>
@@ -342,12 +489,14 @@ function render(){
         </div>
         <div class="errmsg" id="addProductError"></div>
       </div>
+
       <div class="card">
         <div class="name">Joriy qoldiqlar</div>
+        <div class="muted" style="margin-bottom:6px">Kam qolganlariga (⚠️) tsex ko'proq yuborishi kerak</div>
         <div class="divider"></div>
         ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q</div>' : ids.map(id=>{
           const p = products[id];
-          const low = (p.stock||0) <= 5;
+          const low = (p.stock||0) <= LOW_STOCK;
           return `<div class="row">
             <div class="name">${escapeHtml(p.name)}</div>
             <div class="qtybox">
@@ -357,17 +506,13 @@ function render(){
           </div>`;
         }).join('')}
       </div>
+
       <div class="card">
-        <div class="name">Kunlik hisobotlar</div>
+        <div class="name">🏆 Barcha vaqt bo'yicha top mahsulotlar</div>
         <div class="divider"></div>
-        ${dates.length===0 ? '<div class="empty">Hisobotlar hali yo\'q</div>' : dates.map(d=>{
-          const h = state.history[d];
-          return `<div style="margin-bottom:14px">
-            <div style="font-weight:600">${escapeHtml(d)}</div>
-            ${(h.records||[]).map(r=>`<div class="histrow"><span>${escapeHtml(r.product)} — sotildi ${r.sold} ta</span><span>${fmt(r.revenue)} so'm</span></div>`).join('')}
-            <div class="totals">Jami: ${fmt(h.total||0)} so'm</div>
-          </div>`;
-        }).join('')}
+        ${top.length===0 ? '<div class="empty">Hali smena yopilmagan</div>' : top.map((t,i)=>
+          `<div class="logrow"><span>${i+1}. ${escapeHtml(t.name)}</span><span><b>${t.sold} ta</b> · ${fmt(t.revenue)} so'm</span></div>`
+        ).join('')}
       </div>
     `;
     return;
