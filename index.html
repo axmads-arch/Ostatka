@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shirinlik Ombori</title>
+<style>
+  :root{
+    --bg:#faf7f2; --card:#fff; --ink:#2b2118; --muted:#8a7d6f;
+    --accent:#c9752f; --accent2:#7a9a5c; --danger:#c0392b; --border:#e8dfd3;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#1c1712; --card:#26201a; --ink:#f0e9df; --muted:#a99a86; --border:#3a3226; }
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,sans-serif;}
+  header{padding:16px 14px 8px;text-align:center;}
+  header h1{margin:0;font-size:1.3rem;}
+  header p{margin:4px 0 0;color:var(--muted);font-size:.85rem;}
+  .tabs{display:flex;gap:6px;padding:8px;overflow-x:auto;}
+  .tab{flex:1;padding:10px 8px;text-align:center;border-radius:10px;background:var(--card);border:1px solid var(--border);cursor:pointer;font-size:.85rem;white-space:nowrap;}
+  .tab.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+  main{padding:8px 14px 40px;max-width:640px;margin:0 auto;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;}
+  .name{font-weight:600;overflow-wrap:anywhere;}
+  .stock{font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .low{color:var(--danger);font-weight:700;}
+  input[type=number],input[type=text]{
+    width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);
+    background:var(--bg);color:var(--ink);font-size:1rem;min-width:0;
+  }
+  button{padding:8px 12px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-size:.9rem;cursor:pointer;white-space:nowrap;}
+  button.ghost{background:transparent;border:1px solid var(--border);color:var(--ink);padding:6px 10px;}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  .qtybox{display:flex;gap:6px;align-items:center;}
+  .qtybox input{width:80px;flex:none;}
+  .muted{color:var(--muted);font-size:.8rem;}
+  .divider{border-top:1px solid var(--border);margin:10px 0;}
+  .histrow{display:flex;justify-content:space-between;font-size:.9rem;padding:4px 0;border-bottom:1px dashed var(--border);gap:8px;}
+  .histrow:last-child{border-bottom:none;}
+  .totals{font-weight:700;margin-top:6px;}
+  .empty{color:var(--muted);text-align:center;padding:20px 0;}
+  .addform{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;}
+  .addform input{flex:1;min-width:100px;}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:20px;font-size:.85rem;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw;text-align:center;z-index:99;}
+  .toast.show{opacity:1;}
+  .errmsg{color:var(--danger);font-size:.8rem;margin-top:4px;}
+  .full{width:100%;}
+</style>
+</head>
+<body>
+<header>
+  <h1>🍰 Shirinlik Ombori</h1>
+  <p id="dateLabel"></p>
+</header>
+<div class="tabs">
+  <div class="tab" data-tab="tsex">🏭 Tsex</div>
+  <div class="tab" data-tab="kassa">🧾 Smena</div>
+  <div class="tab" data-tab="boss">📊 Boshliq</div>
+</div>
+<main id="main"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+const STORAGE_KEY = 'shirinlik_ombor_v1';
+let state = loadState();
+let activeTab = 'tsex';
+let submitting = false;
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw) return JSON.parse(raw);
+  }catch(e){ console.error('State o\'qishda xato', e); }
+  return { products:{}, history:{} };
+}
+
+function saveState(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    return true;
+  }catch(e){
+    console.error('Saqlashda xato', e);
+    showToast('Xotiraga saqlab bo\'lmadi (joy yetmadimi?)');
+    return false;
+  }
+}
+
+function todayStr(){
+  const d = new Date();
+  const tz = d.getTimezoneOffset();
+  return new Date(d.getTime() - tz*60000).toISOString().slice(0,10);
+}
+document.getElementById('dateLabel').textContent =
+  new Date().toLocaleDateString('uz-UZ', {day:'numeric', month:'long', year:'numeric'});
+
+let toastTimer = null;
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function slug(name){
+  const base = String(name).toLowerCase()
+    .replace(/[^a-z0-9\u0400-\u04FF]+/gi,'-')
+    .replace(/^-+|-+$/g,'');
+  return (base || 'mahsulot') + '-' + Date.now().toString(36);
+}
+
+function num(val, {min=null, allowFloat=false} = {}){
+  const n = allowFloat ? parseFloat(val) : parseInt(val, 10);
+  if(isNaN(n) || !isFinite(n)) return null;
+  if(min !== null && n < min) return null;
+  return n;
+}
+
+function fmt(n){
+  const v = Number(n);
+  if(isNaN(v)) return '0';
+  return Math.round(v).toLocaleString('uz-UZ');
+}
+
+document.querySelectorAll('.tab').forEach(t=>{
+  t.addEventListener('click', ()=>{ activeTab = t.dataset.tab; render(); });
+});
+
+function addProduct(){
+  const errEl = document.getElementById('addProductError');
+  if(errEl) errEl.textContent = '';
+  const nameEl = document.getElementById('newName');
+  const priceEl = document.getElementById('newPrice');
+  const name = nameEl.value.trim();
+  let price = 0;
+  if(priceEl.value.trim() !== ''){
+    const parsed = num(priceEl.value, {min:0, allowFloat:true});
+    if(parsed === null){
+      if(errEl) errEl.textContent = 'Narx manfiy bo\'lmasligi kerak';
+      priceEl.focus();
+      return;
+    }
+    price = parsed;
+  }
+  if(!name){
+    if(errEl) errEl.textContent = 'Mahsulot nomini kiriting';
+    nameEl.focus();
+    return;
+  }
+  const exists = Object.values(state.products).some(p => (p.name||'').trim().toLowerCase() === name.toLowerCase());
+  if(exists){
+    if(errEl) errEl.textContent = 'Bu mahsulot allaqachon mavjud';
+    return;
+  }
+  const id = slug(name);
+  state.products[id] = {name, price, stock:0, incoming:0};
+  if(saveState()){
+    nameEl.value=''; priceEl.value='';
+    showToast('Qo\'shildi: ' + name);
+    render();
+  }
+}
+
+function addBatch(id){
+  const input = document.getElementById('batch-'+id);
+  if(!input) return;
+  const qty = num(input.value, {min:1});
+  if(qty === null){ showToast('Miqdorni to\'g\'ri kiriting (1 dan katta)'); return; }
+  const p = state.products[id];
+  if(!p){ showToast('Mahsulot topilmadi'); return; }
+  p.stock = (p.stock||0) + qty;
+  p.incoming = (p.incoming||0) + qty;
+  if(saveState()){
+    input.value='';
+    showToast(p.name + ': +' + qty + ' ta');
+    render();
+  }
+}
+
+function deleteProduct(id){
+  const p = state.products[id];
+  if(!p) return;
+  if(!confirm('O\'chirilsinmi: ' + p.name + '?')) return;
+  delete state.products[id];
+  if(saveState()){ showToast('O\'chirildi'); render(); }
+}
+
+function submitShift(){
+  if(submitting) return;
+  const ids = Object.keys(state.products);
+  const entries = [];
+  for(const id of ids){
+    const el = document.getElementById('count-'+id);
+    if(!el) continue;
+    const raw = el.value.trim();
+    if(raw === '') continue;
+    const counted = num(raw, {min:0});
+    if(counted === null){
+      showToast((state.products[id].name||'Mahsulot') + ' uchun son noto\'g\'ri');
+      return;
+    }
+    entries.push({id, counted});
+  }
+  if(entries.length === 0){
+    showToast('Kamida bitta mahsulot uchun qoldiqni kiriting');
+    return;
+  }
+
+  submitting = true;
+  const btn = document.getElementById('submitShiftBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Yuborilmoqda…'; }
+
+  try{
+    const date = todayStr();
+    const newRecords = [];
+    let total = 0;
+
+    for(const {id, counted} of entries){
+      const p = state.products[id];
+      if(!p) continue;
+      const stockBefore = p.stock || 0;
+      const incoming = p.incoming || 0;
+      const sold = Math.max(0, stockBefore - counted);
+      const revenue = sold * (p.price || 0);
+      total += revenue;
+      newRecords.push({
+        product: p.name,
+        startStock: stockBefore - incoming,
+        incoming,
+        endCounted: counted,
+        sold,
+        revenue
+      });
+      p.stock = counted;
+      p.incoming = 0;
+    }
+
+    if(newRecords.length === 0){ showToast('Hech narsa saqlanmadi'); return; }
+
+    const prev = state.history[date] || {records:[], total:0};
+    prev.records = (prev.records||[]).concat(newRecords);
+    prev.total = (prev.total||0) + total;
+    prev.closed = true;
+    prev.updatedAt = Date.now();
+    state.history[date] = prev;
+
+    if(saveState()){
+      showToast('Otchyot saqlandi ✅');
+      document.querySelectorAll('input[id^="count-"]').forEach(i => i.value='');
+      render();
+    }
+  }finally{
+    submitting = false;
+    if(btn){ btn.disabled = false; btn.textContent = "✅ Otchyot yuborish"; }
+  }
+}
+
+document.getElementById('main').addEventListener('click', (e)=>{
+  const addBtn = e.target.closest('[data-action="add-batch"]');
+  if(addBtn){ addBatch(addBtn.dataset.id); return; }
+  const delBtn = e.target.closest('[data-action="delete-product"]');
+  if(delBtn){ deleteProduct(delBtn.dataset.id); return; }
+  const submitBtn = e.target.closest('[data-action="submit-shift"]');
+  if(submitBtn){ submitShift(); return; }
+  const addProdBtn = e.target.closest('[data-action="add-product"]');
+  if(addProdBtn){ addProduct(); return; }
+});
+document.getElementById('main').addEventListener('keydown', (e)=>{
+  if(e.key !== 'Enter') return;
+  if(e.target.matches('input[id^="batch-"]')){
+    addBatch(e.target.id.replace('batch-',''));
+  }
+  if(e.target.id === 'newName' || e.target.id === 'newPrice'){ addProduct(); }
+});
+
+function render(){
+  const main = document.getElementById('main');
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===activeTab));
+  const products = state.products;
+  const ids = Object.keys(products).sort((a,b)=>
+    (products[a].name||'').localeCompare(products[b].name||'', 'uz'));
+
+  if(activeTab === 'tsex'){
+    main.innerHTML = `
+      <div class="card"><div class="muted">Yangi partiya keldi — miqdorni kiriting va qo'shing</div></div>
+      ${ids.length===0 ? '<div class="empty">Hali mahsulot yo\'q.<br>Boshliq bo\'limidan qo\'shing.</div>' : ''}
+      ${ids.map(id=>{
+        const p = products[id];
+        const stock = p.stock||0;
+        const low = stock <= 5;
+        return `<div class="card">
+          <div class="row">
+            <div class="name">${escapeHtml(p.name)}</div>
+            <div class="stock ${low?'low':''}">${stock} ta ${low?'⚠️':''}</div>
+          </div>
+          <div class="qtybox">
+            <input type="number" id="batch-${id}" placeholder="miqdor" min="1" inputmode="numeric">
+            <button data-action="add-batch" data-id="${id}">＋ Qo'shish</button>
+          </div>
+        </div>`;
+      }).join('')}
+    `;
+    return;
+  }
+
+  if(activeTab === 'kassa'){
+    main.innerHTML = `
+      <div class="card"><div class="muted">Smena oxiri — har bir mahsulotning haqiqiy qoldig'ini sanab kiriting</div></div>
+      ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q.</div>' : ''}
+      ${ids.map(id=>{
+        const p = products[id];
+        return `<div class="card">
+          <div class="row">
+            <div class="name">${escapeHtml(p.name)}</div>
+            <div class="muted">Kutilgan: ${p.stock||0} ta · ${fmt(p.price)} so'm/dona</div>
+          </div>
+          <input type="number" id="count-${id}" placeholder="haqiqiy qoldiq" min="0" inputmode="numeric">
+        </div>`;
+      }).join('')}
+      ${ids.length>0 ? `<button class="full" id="submitShiftBtn" data-action="submit-shift">✅ Otchyot yuborish</button>` : ''}
+    `;
+    return;
+  }
+
+  if(activeTab === 'boss'){
+    const dates = Object.keys(state.history).sort().reverse();
+    main.innerHTML = `
+      <div class="card">
+        <div class="name">Yangi mahsulot qo'shish</div>
+        <div class="addform">
+          <input type="text" id="newName" placeholder="Nomi (masalan: Napoleon)">
+          <input type="number" id="newPrice" placeholder="Narxi (ixtiyoriy)" min="0">
+          <button id="addProductBtn" data-action="add-product">＋ Qo'shish</button>
+        </div>
+        <div class="errmsg" id="addProductError"></div>
+      </div>
+      <div class="card">
+        <div class="name">Joriy qoldiqlar</div>
+        <div class="divider"></div>
+        ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q</div>' : ids.map(id=>{
+          const p = products[id];
+          const low = (p.stock||0) <= 5;
+          return `<div class="row">
+            <div class="name">${escapeHtml(p.name)}</div>
+            <div class="qtybox">
+              <span class="stock ${low?'low':''}">${p.stock||0} ta</span>
+              <button class="ghost" data-action="delete-product" data-id="${id}">🗑</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="card">
+        <div class="name">Kunlik hisobotlar</div>
+        <div class="divider"></div>
+        ${dates.length===0 ? '<div class="empty">Hisobotlar hali yo\'q</div>' : dates.map(d=>{
+          const h = state.history[d];
+          return `<div style="margin-bottom:14px">
+            <div style="font-weight:600">${escapeHtml(d)}</div>
+            ${(h.records||[]).map(r=>`<div class="histrow"><span>${escapeHtml(r.product)} — sotildi ${r.sold} ta</span><span>${fmt(r.revenue)} so'm</span></div>`).join('')}
+            <div class="totals">Jami: ${fmt(h.total||0)} so'm</div>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+    return;
+  }
+}
+
+render();
+</script>
+</body>
+</html>
