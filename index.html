@@ -62,9 +62,9 @@
 </header>
 <div class="tabs">
   <div class="tab" data-tab="tsex">🏭 Tsex</div>
-  <div class="tab" data-tab="tarix">📅 Tarix</div>
-  <div class="tab" data-tab="kassa">🧾 Smena</div>
-  <div class="tab" data-tab="boss">📊 Boshliq</div>
+  <div class="tab" data-tab="tarix">📅 Kunlik</div>
+  <div class="tab" data-tab="kassa">🧾 Ostatka</div>
+  <div class="tab" data-tab="boss">📊 Statistika</div>
 </div>
 <main id="main"></main>
 <div class="toast" id="toast"></div>
@@ -226,6 +226,29 @@ function deleteProduct(id){
   if(saveState()){ showToast('O\'chirildi'); render(); }
 }
 
+// ---------- Tozalash ----------
+function clearDate(date){
+  if(!confirm(fmtDate(date) + ' kuni uchun barcha partiya va smena yozuvlari o\'chirilsinmi?')) return;
+  state.batches = state.batches.filter(b => b.date !== date);
+  delete state.shifts[date];
+  if(saveState()){ showToast('Tozalandi: ' + fmtDate(date)); render(); }
+}
+
+function resetHistory(){
+  if(!confirm('Barcha partiyalar va kunlik hisobotlar (tarix) o\'chirilsinmi? Mahsulotlar ro\'yxati va joriy qoldiqlar saqlanib qoladi.')) return;
+  if(!confirm('Bu amalni orqaga qaytarib bo\'lmaydi. Davom etilsinmi?')) return;
+  state.batches = [];
+  state.shifts = {};
+  if(saveState()){ showToast('Tarix tozalandi'); render(); }
+}
+
+function resetEverything(){
+  if(!confirm('DIQQAT: barcha mahsulotlar, qoldiqlar va tarix butunlay o\'chiriladi. Davom etilsinmi?')) return;
+  if(!confirm('Haqiqatan ham hammasini o\'chirmoqchimisiz? Bu amalni qaytarib bo\'lmaydi!')) return;
+  state = { products:{}, batches:[], shifts:{} };
+  if(saveState()){ showToast('Hammasi tozalandi'); render(); }
+}
+
 // ---------- Tsex: partiya qo'shish (log bilan) ----------
 function addBatch(id){
   const input = document.getElementById('batch-'+id);
@@ -341,6 +364,49 @@ function topForDate(date){
   return [...sh.entries].sort((a,b)=>(b.sold||0)-(a.sold||0));
 }
 
+// ---------- Oxirgi N kunlik xulosa ----------
+function lastNDaysSummary(n=7){
+  const days = [];
+  for(let i=n-1; i>=0; i--){
+    const d = new Date();
+    d.setDate(d.getDate()-i);
+    const date = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const sh = state.shifts[date];
+    const sold = sh ? (sh.entries||[]).reduce((s,e)=>s+(e.sold||0),0) : 0;
+    const total = sh ? (sh.total||0) : 0;
+    days.push({date, sold, total, closed: !!sh});
+  }
+  return days;
+}
+
+// ---------- CSV eksport ----------
+function exportCsv(){
+  const dates = Object.keys(state.shifts).sort();
+  if(dates.length === 0){ showToast('Hali hisobot yo\'q'); return; }
+  const rows = [['Sana','Mahsulot','Kelgan','Sotilgan','Narxi','Summasi']];
+  dates.forEach(date=>{
+    const sh = state.shifts[date];
+    (sh.entries||[]).forEach(e=>{
+      const price = e.sold>0 ? Math.round((e.revenue||0)/e.sold) : '';
+      rows.push([date, e.productName, e.incoming||0, e.sold||0, price, e.revenue||0]);
+    });
+  });
+  const csv = rows.map(r=>r.map(v=>{
+    const s = String(v);
+    return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  }).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'shirinlik-hisobot-' + todayStr() + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('Hisobot yuklab olindi');
+}
+
 // ---------- Voqealar (delegatsiya) ----------
 document.getElementById('main').addEventListener('click', (e)=>{
   const addBtn = e.target.closest('[data-action="add-batch"]');
@@ -351,6 +417,14 @@ document.getElementById('main').addEventListener('click', (e)=>{
   if(submitBtn){ submitShift(); return; }
   const addProdBtn = e.target.closest('[data-action="add-product"]');
   if(addProdBtn){ addProduct(); return; }
+  const clearDateBtn = e.target.closest('[data-action="clear-date"]');
+  if(clearDateBtn){ clearDate(clearDateBtn.dataset.date); return; }
+  const resetHistBtn = e.target.closest('[data-action="reset-history"]');
+  if(resetHistBtn){ resetHistory(); return; }
+  const resetAllBtn = e.target.closest('[data-action="reset-all"]');
+  if(resetAllBtn){ resetEverything(); return; }
+  const exportBtn = e.target.closest('[data-action="export-csv"]');
+  if(exportBtn){ exportCsv(); return; }
 });
 document.getElementById('main').addEventListener('keydown', (e)=>{
   if(e.key !== 'Enter') return;
@@ -429,7 +503,10 @@ function render(){
           <label class="muted" style="white-space:nowrap">Sana:</label>
           <input type="date" id="tarixDateInput" value="${tarixDate}">
         </div>
-        <div class="muted">${fmtDate(tarixDate)}</div>
+        <div class="row" style="margin-top:6px;margin-bottom:0">
+          <div class="muted">${fmtDate(tarixDate)}</div>
+          ${(dayBatches.length>0 || shift) ? `<button class="ghost" data-action="clear-date" data-date="${tarixDate}">🗑 Shu kunni tozalash</button>` : ''}
+        </div>
       </div>
 
       <div class="card">
@@ -479,6 +556,9 @@ function render(){
 
   if(activeTab === 'boss'){
     const top = allTimeTop(5);
+    const week = lastNDaysSummary(7);
+    const weekTotal = week.reduce((s,d)=>s+d.total,0);
+    const weekSold = week.reduce((s,d)=>s+d.sold,0);
     main.innerHTML = `
       <div class="card">
         <div class="name">Yangi mahsulot qo'shish</div>
@@ -508,11 +588,44 @@ function render(){
       </div>
 
       <div class="card">
+        <div class="row"><div class="name">📈 Oxirgi 7 kun</div><span class="pill">${fmt(weekTotal)} so'm</span></div>
+        <div class="divider"></div>
+        ${week.map(d=>{
+          const isToday = d.date === todayStr();
+          return `<div class="logrow">
+            <span>${isToday?'<b>Bugun</b>':fmtDate(d.date).replace(/ \d{4}$/,'')}</span>
+            <span>${d.closed ? `${d.sold} ta — <b>${fmt(d.total)} so'm</b>` : '<span class="muted">yopilmagan</span>'}</span>
+          </div>`;
+        }).join('')}
+        <div class="totals">Jami sotilgan: ${weekSold} ta</div>
+      </div>
+
+      <div class="card">
         <div class="name">🏆 Barcha vaqt bo'yicha top mahsulotlar</div>
         <div class="divider"></div>
         ${top.length===0 ? '<div class="empty">Hali smena yopilmagan</div>' : top.map((t,i)=>
           `<div class="logrow"><span>${i+1}. ${escapeHtml(t.name)}</span><span><b>${t.sold} ta</b> · ${fmt(t.revenue)} so'm</span></div>`
         ).join('')}
+      </div>
+
+      <div class="card">
+        <div class="name">📤 Hisobotni yuklab olish</div>
+        <div class="muted" style="margin-bottom:8px">Barcha kunlik hisobotlarni Excel'da ochiladigan faylga (CSV) yuklab oling</div>
+        <button class="full secondary" data-action="export-csv">⬇️ CSV yuklab olish</button>
+      </div>
+
+      <div class="card">
+        <div class="name">Ma'lumotlarni tozalash</div>
+        <div class="muted" style="margin-bottom:8px">Test uchun kiritilgan noto'g'ri raqamlarni shu yerdan tozalashingiz mumkin</div>
+        <div class="addform">
+          <button class="ghost full" data-action="reset-history">🗑 Faqat tarixni tozalash</button>
+        </div>
+        <div class="muted" style="margin:6px 0">Mahsulotlar va joriy qoldiqlar saqlanib qoladi, faqat partiyalar jurnali va kunlik hisobotlar o'chadi.</div>
+        <div class="divider"></div>
+        <div class="addform">
+          <button class="full" style="background:var(--danger)" data-action="reset-all">⚠️ Hammasini o'chirish</button>
+        </div>
+        <div class="muted" style="margin-top:6px">Mahsulotlar, qoldiqlar va tarix — barchasi butunlay o'chadi.</div>
       </div>
     `;
     return;
