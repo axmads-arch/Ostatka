@@ -53,6 +53,19 @@
   .datebar input{flex:1;}
   .top1{background:rgba(122,154,92,.15);border-radius:10px;padding:8px 10px;margin-bottom:6px;}
   .badge{background:var(--accent2);color:#fff;border-radius:8px;padding:1px 7px;font-size:.7rem;margin-right:6px;}
+  .sheet{width:100%;border-collapse:collapse;font-size:.82rem;}
+  .sheet th{position:sticky;top:0;background:var(--card);text-align:center;padding:6px 3px;border-bottom:2px solid var(--border);font-size:.72rem;color:var(--muted);z-index:1;}
+  .sheet th:first-child{text-align:left;}
+  .sheet td{padding:4px 3px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  .sheet .catrow td{background:rgba(201,117,47,.13);font-weight:700;padding:6px 4px;font-size:.8rem;}
+  .sheet .menuname{max-width:110px;overflow-wrap:anywhere;line-height:1.15;}
+  .sheet td.num{text-align:center;width:64px;}
+  .cell-input{width:56px;padding:5px 2px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--ink);font-size:.85rem;text-align:center;-moz-appearance:textfield;}
+  .cell-input.low-cell{border-color:var(--danger);color:var(--danger);font-weight:700;}
+  .cell-input::-webkit-outer-spin-button,.cell-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+  .sheet-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .saved-flash{animation:flashok .6s ease;}
+  @keyframes flashok{0%{background:rgba(122,154,92,.35);}100%{background:transparent;}}
 </style>
 </head>
 <body>
@@ -107,7 +120,7 @@ function normalize(s){
 function migrateFromV1(old){
   const products = {};
   Object.entries(old.products||{}).forEach(([id,p])=>{
-    products[id] = {name:p.name, price:p.price||0, stock:p.stock||0};
+    products[id] = {name:p.name, category:p.category||'Boshqalar', price:p.price||0, standart:p.standart||0, stock:p.stock||0, orderQty:p.orderQty||0};
   });
   const shifts = {};
   Object.entries(old.history||{}).forEach(([date,h])=>{
@@ -119,7 +132,7 @@ function migrateFromV1(old){
       total: h.total||0, closedAt: h.updatedAt||Date.now()
     };
   });
-  return { products, batches:[], shifts };
+  return { products, batches:[], shifts, utensils:{}, utensilChecks:{} };
 }
 
 function saveState(){
@@ -195,8 +208,11 @@ function addProduct(){
   const errEl = document.getElementById('addProductError');
   if(errEl) errEl.textContent = '';
   const nameEl = document.getElementById('newName');
+  const catEl = document.getElementById('newCategory');
   const priceEl = document.getElementById('newPrice');
+  const standartEl = document.getElementById('newStandart');
   const name = nameEl.value.trim();
+  const category = (catEl && catEl.value.trim()) || 'Boshqalar';
   let price = 0;
   if(priceEl.value.trim() !== ''){
     const parsed = num(priceEl.value, {min:0, allowFloat:true});
@@ -206,6 +222,12 @@ function addProduct(){
     }
     price = parsed;
   }
+  let standart = 0;
+  if(standartEl && standartEl.value.trim() !== ''){
+    const parsedS = num(standartEl.value, {min:0});
+    if(parsedS === null){ if(errEl) errEl.textContent = 'Standart son manfiy bo\'lmasligi kerak'; standartEl.focus(); return; }
+    standart = parsedS;
+  }
   if(!name){
     if(errEl) errEl.textContent = 'Mahsulot nomini kiriting';
     nameEl.focus(); return;
@@ -213,12 +235,69 @@ function addProduct(){
   const exists = Object.values(state.products).some(p => (p.name||'').trim().toLowerCase() === name.toLowerCase());
   if(exists){ if(errEl) errEl.textContent = 'Bu mahsulot allaqachon mavjud'; return; }
   const id = slug(name);
-  state.products[id] = {name, price, stock:0, orderQty:0};
+  state.products[id] = {name, category, price, standart, stock:0, orderQty:0};
   if(saveState()){
-    nameEl.value=''; priceEl.value='';
+    nameEl.value=''; if(catEl) catEl.value=''; priceEl.value=''; if(standartEl) standartEl.value='';
     showToast('Qo\'shildi: ' + name);
     render();
   }
+}
+
+function isLow(p){
+  const stock = p.stock||0;
+  if(p.standart && p.standart>0) return stock < p.standart;
+  return stock <= LOW_STOCK;
+}
+
+function groupByCategory(ids, products){
+  const groups = {};
+  const order = [];
+  ids.forEach(id=>{
+    const cat = products[id].category || 'Boshqalar';
+    if(!groups[cat]){ groups[cat]=[]; order.push(cat); }
+    groups[cat].push(id);
+  });
+  order.forEach(cat=> groups[cat].sort((a,b)=>(products[a].name||'').localeCompare(products[b].name||'', 'uz')));
+  return order.map(cat=>({cat, ids:groups[cat]}));
+}
+
+// ---------- Jadval katakchalarini saqlash (Ostatka sahifasi) ----------
+function updateOstatka(id, rawVal){
+  const p = state.products[id];
+  if(!p) return;
+  const counted = num(rawVal, {min:0});
+  if(counted === null) return;
+  const date = todayStr();
+  const incoming = batchesForDate(date).filter(b=>b.productId===id).reduce((s,b)=>s+b.qty,0);
+  const stockBefore = p.stock || 0;
+  const sold = Math.max(0, stockBefore - counted);
+  const revenue = sold * (p.price || 0);
+  const entry = {productId:id, productName:p.name, incoming, startStock: stockBefore-incoming, endCounted:counted, sold, revenue};
+  const shift = state.shifts[date] || {entries:[], total:0};
+  shift.entries = (shift.entries||[]).filter(e => e.productId !== id).concat([entry]);
+  shift.total = shift.entries.reduce((s,e)=>s+(e.revenue||0),0);
+  shift.closedAt = Date.now();
+  state.shifts[date] = shift;
+  p.stock = counted;
+  saveState();
+}
+
+function updateStandart(id, rawVal){
+  const p = state.products[id];
+  if(!p) return;
+  const val = rawVal.trim()==='' ? 0 : num(rawVal, {min:0});
+  if(val === null) return;
+  p.standart = val;
+  saveState();
+}
+
+function updateZakaz(id, rawVal){
+  const p = state.products[id];
+  if(!p) return;
+  const val = rawVal.trim()==='' ? 0 : num(rawVal, {min:0});
+  if(val === null) return;
+  p.orderQty = val;
+  saveState();
 }
 
 function deleteProduct(id){
@@ -274,21 +353,6 @@ function addBatch(id){
   if(saveState()){
     input.value = '';
     showToast(p.name + ': +' + qty + ' ta (' + time + ')');
-    render();
-  }
-}
-
-function setOrder(id){
-  const input = document.getElementById('order-'+id);
-  if(!input) return;
-  const raw = input.value.trim();
-  const qty = raw === '' ? 0 : num(raw, {min:0});
-  if(qty === null){ showToast('Zakaz miqdorini to\'g\'ri kiriting'); return; }
-  const p = state.products[id];
-  if(!p) return;
-  p.orderQty = qty;
-  if(saveState()){
-    showToast(qty>0 ? (p.name + ' uchun zakaz: ' + qty + ' ta') : (p.name + ' zakazi bekor qilindi'));
     render();
   }
 }
@@ -373,72 +437,7 @@ function submitUtensilCheck(){
   }
 }
 
-function submitShift(){
-  if(submitting) return;
-  const ids = Object.keys(state.products);
-  const entries = [];
-  for(const id of ids){
-    const el = document.getElementById('count-'+id);
-    if(!el) continue;
-    const raw = el.value.trim();
-    if(raw === '') continue;
-    const counted = num(raw, {min:0});
-    if(counted === null){
-      showToast((state.products[id].name||'Mahsulot') + ' uchun son noto\'g\'ri');
-      return;
-    }
-    entries.push({id, counted});
-  }
-  if(entries.length === 0){ showToast('Kamida bitta mahsulot uchun qoldiqni kiriting'); return; }
 
-  submitting = true;
-  const btn = document.getElementById('submitShiftBtn');
-  if(btn){ btn.disabled = true; btn.textContent = 'Yuborilmoqda…'; }
-
-  try{
-    const date = todayStr();
-    const todaysBatches = batchesForDate(date);
-    const newEntries = [];
-    let total = 0;
-
-    for(const {id, counted} of entries){
-      const p = state.products[id];
-      if(!p) continue;
-      const incoming = todaysBatches.filter(b=>b.productId===id).reduce((s,b)=>s+b.qty,0);
-      const stockBefore = p.stock || 0;
-      const sold = Math.max(0, stockBefore - counted);
-      const revenue = sold * (p.price || 0);
-      total += revenue;
-      newEntries.push({
-        productId: id, productName: p.name,
-        incoming, startStock: stockBefore - incoming,
-        endCounted: counted, sold, revenue
-      });
-      p.stock = counted;
-    }
-
-    if(newEntries.length === 0){ showToast('Hech narsa saqlanmadi'); return; }
-
-    const prev = state.shifts[date] || {entries:[], total:0};
-    // bir xil mahsulot uchun avvalgi yozuv bo'lsa, uni yangisi bilan almashtiramiz (bir kunda bir necha marta yopish holati uchun)
-    const byProduct = {};
-    (prev.entries||[]).forEach(e => byProduct[e.productId || e.productName] = e);
-    newEntries.forEach(e => byProduct[e.productId || e.productName] = e);
-    const mergedEntries = Object.values(byProduct);
-    const mergedTotal = mergedEntries.reduce((s,e)=>s+e.revenue,0);
-
-    state.shifts[date] = { entries: mergedEntries, total: mergedTotal, closedAt: Date.now() };
-
-    if(saveState()){
-      showToast('Otchyot saqlandi ✅');
-      document.querySelectorAll('input[id^="count-"]').forEach(i => i.value='');
-      render();
-    }
-  }finally{
-    submitting = false;
-    if(btn){ btn.disabled = false; btn.textContent = "✅ Otchyot yuborish"; }
-  }
-}
 
 // ---------- Top mahsulotlar (barcha vaqt) ----------
 function allTimeTop(limit=5){
@@ -509,8 +508,6 @@ document.getElementById('main').addEventListener('click', (e)=>{
   if(addBtn){ addBatch(addBtn.dataset.id); return; }
   const delBtn = e.target.closest('[data-action="delete-product"]');
   if(delBtn){ deleteProduct(delBtn.dataset.id); return; }
-  const submitBtn = e.target.closest('[data-action="submit-shift"]');
-  if(submitBtn){ submitShift(); return; }
   const addProdBtn = e.target.closest('[data-action="add-product"]');
   if(addProdBtn){ addProduct(); return; }
   const clearDateBtn = e.target.closest('[data-action="clear-date"]');
@@ -521,8 +518,6 @@ document.getElementById('main').addEventListener('click', (e)=>{
   if(resetAllBtn){ resetEverything(); return; }
   const exportBtn = e.target.closest('[data-action="export-csv"]');
   if(exportBtn){ exportCsv(); return; }
-  const orderBtn = e.target.closest('[data-action="set-order"]');
-  if(orderBtn){ setOrder(orderBtn.dataset.id); return; }
   const addUtBtn = e.target.closest('[data-action="add-utensil"]');
   if(addUtBtn){ addUtensil(); return; }
   const delUtBtn = e.target.closest('[data-action="delete-utensil"]');
@@ -531,15 +526,36 @@ document.getElementById('main').addEventListener('click', (e)=>{
   if(submitUtBtn){ submitUtensilCheck(); return; }
 });
 document.getElementById('main').addEventListener('keydown', (e)=>{
-  if(e.key !== 'Enter') return;
-  if(e.target.matches('input[id^="batch-"]')){ addBatch(e.target.id.replace('batch-','')); }
-  if(e.target.matches('input[id^="order-"]')){ setOrder(e.target.id.replace('order-','')); }
-  if(e.target.id === 'newName' || e.target.id === 'newPrice'){ addProduct(); }
+  if(e.target.matches('input[id^="batch-"]') && e.key==='Enter'){ addBatch(e.target.id.replace('batch-','')); }
+  if((e.target.id === 'newName' || e.target.id === 'newPrice') && e.key==='Enter'){ addProduct(); }
+  // jadval katakchalarida Enter bosilsa, keyingi qatorga o'tkazadi va saqlaydi
+  if(e.key === 'Enter' && e.target.classList.contains('cell-input')){
+    e.target.blur();
+  }
 });
 document.getElementById('main').addEventListener('change', (e)=>{
   if(e.target.id === 'tarixDateInput'){
     tarixDate = e.target.value || todayStr();
     render();
+    return;
+  }
+  const t = e.target;
+  if(!t.classList || !t.classList.contains('cell-input')) return;
+  const id = t.dataset.id;
+  if(!id) return;
+  const flash = ()=>{
+    const cell = t.closest('td');
+    if(cell){ cell.classList.remove('saved-flash'); void cell.offsetWidth; cell.classList.add('saved-flash'); }
+  };
+  if(t.classList.contains('ostatka-input')){
+    updateOstatka(id, t.value);
+    render();
+  }else if(t.classList.contains('standart-input')){
+    updateStandart(id, t.value);
+    flash();
+  }else if(t.classList.contains('zakaz-input')){
+    updateZakaz(id, t.value);
+    flash();
   }
 });
 
@@ -575,7 +591,7 @@ function render(){
       ${ids.map(id=>{
         const p = products[id];
         const stock = p.stock||0;
-        const low = stock <= LOW_STOCK;
+        const low = isLow(p);
         const t = byProductToday[id];
         const order = p.orderQty||0;
         return `<div class="card">
@@ -650,40 +666,30 @@ function render(){
   }
 
   if(activeTab === 'kassa'){
+    const groups = groupByCategory(ids, products);
     main.innerHTML = `
-      <div class="card"><div class="muted">Smena oxiri — har bir mahsulotning haqiqiy qoldig'ini sanab kiriting</div></div>
-      ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q.</div>' : ''}
-      ${ids.map(id=>{
-        const p = products[id];
-        return `<div class="card">
-          <div class="row">
-            <div class="name">${escapeHtml(p.name)}</div>
-            <div class="muted">Hozirgi: ${p.stock||0} ta · ${fmt(p.price)} so'm/dona</div>
-          </div>
-          <input type="number" id="count-${id}" placeholder="haqiqiy qoldiq" min="0" inputmode="numeric">
-        </div>`;
-      }).join('')}
-      ${ids.length>0 ? `<button class="full" id="submitShiftBtn" data-action="submit-shift">✅ Otchyot yuborish</button>` : ''}
-
-      <div class="card">
-        <div class="name">📦 Zakaz berish</div>
-        <div class="muted" style="margin-bottom:6px">Tsexdan qancha kerakligini yozing — ular Tsex sahifasida ko'radi va yuborgach avtomatik yopiladi</div>
-        <div class="divider"></div>
-        ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q.</div>' : ids.map(id=>{
-          const p = products[id];
-          const order = p.orderQty||0;
-          return `<div class="card" style="margin-bottom:8px">
-            <div class="row">
-              <div class="name">${escapeHtml(p.name)}</div>
-              ${order>0 ? `<span class="badge">${order} ta kutilmoqda</span>` : ''}
-            </div>
-            <div class="qtybox">
-              <input type="number" id="order-${id}" placeholder="zakaz miqdori" min="0" inputmode="numeric" value="${order>0?order:''}">
-              <button data-action="set-order" data-id="${id}">💾 Saqlash</button>
-            </div>
-          </div>`;
-        }).join('')}
-      </div>
+      <div class="card"><div class="muted">Har bir katakchaga to'g'ridan-to'g'ri yozing — chiqib ketishingiz bilan (yoki Enter) avtomatik saqlanadi. <b>Ostatka</b> — hozirgi qoldiq, <b>Standart</b> — norma, <b>Zakaz</b> — tsexga qancha kerakligi.</div></div>
+      ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q. Statistika bo\'limidan qo\'shing.</div>' : `
+      <div class="card sheet-wrap" style="padding:0">
+        <table class="sheet">
+          <thead><tr><th>Menu</th><th>Ostatka</th><th>Standart</th><th>Zakaz</th></tr></thead>
+          <tbody>
+            ${groups.map(g=>`
+              <tr class="catrow"><td colspan="4">${escapeHtml(g.cat)}</td></tr>
+              ${g.ids.map(id=>{
+                const p = products[id];
+                const low = isLow(p);
+                return `<tr>
+                  <td class="menuname">${escapeHtml(p.name)}</td>
+                  <td class="num"><input type="number" inputmode="numeric" class="cell-input ostatka-input ${low?'low-cell':''}" data-id="${id}" value="${p.stock||0}"></td>
+                  <td class="num"><input type="number" inputmode="numeric" class="cell-input standart-input" data-id="${id}" value="${p.standart||0}"></td>
+                  <td class="num"><input type="number" inputmode="numeric" class="cell-input zakaz-input" data-id="${id}" value="${p.orderQty||0}"></td>
+                </tr>`;
+              }).join('')}
+            `).join('')}
+          </tbody>
+        </table>
+      </div>`}
     `;
     return;
   }
@@ -759,12 +765,15 @@ function render(){
     const week = lastNDaysSummary(7);
     const weekTotal = week.reduce((s,d)=>s+d.total,0);
     const weekSold = week.reduce((s,d)=>s+d.sold,0);
+    const groups = groupByCategory(ids, products);
     main.innerHTML = `
       <div class="card">
         <div class="name">Yangi mahsulot qo'shish</div>
         <div class="addform">
           <input type="text" id="newName" placeholder="Nomi (masalan: Napoleon)">
+          <input type="text" id="newCategory" placeholder="Kategoriya (masalan: San-sevastian)">
           <input type="number" id="newPrice" placeholder="Narxi (ixtiyoriy)" min="0">
+          <input type="number" id="newStandart" placeholder="Standart (ixtiyoriy)" min="0">
           <button id="addProductBtn" data-action="add-product">＋ Qo'shish</button>
         </div>
         <div class="errmsg" id="addProductError"></div>
@@ -772,19 +781,22 @@ function render(){
 
       <div class="card">
         <div class="name">Joriy qoldiqlar</div>
-        <div class="muted" style="margin-bottom:6px">Kam qolganlariga (⚠️) tsex ko'proq yuborishi kerak</div>
+        <div class="muted" style="margin-bottom:6px">Kam qolganlariga (⚠️) tsex ko'proq yuborishi kerak. Kategoriya va standart sonini Ostatka sahifasidan ham tahrirlash mumkin.</div>
         <div class="divider"></div>
-        ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q</div>' : ids.map(id=>{
-          const p = products[id];
-          const low = (p.stock||0) <= LOW_STOCK;
-          return `<div class="row">
-            <div class="name">${escapeHtml(p.name)}</div>
-            <div class="qtybox">
-              <span class="stock ${low?'low':''}">${p.stock||0} ta</span>
-              <button class="ghost" data-action="delete-product" data-id="${id}">🗑</button>
-            </div>
-          </div>`;
-        }).join('')}
+        ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q</div>' : groups.map(g=>`
+          <div class="muted" style="margin:8px 0 2px;font-weight:700">${escapeHtml(g.cat)}</div>
+          ${g.ids.map(id=>{
+            const p = products[id];
+            const low = isLow(p);
+            return `<div class="row">
+              <div class="name">${escapeHtml(p.name)}${p.standart>0?` <span class="muted">(norma: ${p.standart})</span>`:''}</div>
+              <div class="qtybox">
+                <span class="stock ${low?'low':''}">${p.stock||0} ta</span>
+                <button class="ghost" data-action="delete-product" data-id="${id}">🗑</button>
+              </div>
+            </div>`;
+          }).join('')}
+        `).join('')}
       </div>
 
       <div class="card">
