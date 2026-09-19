@@ -268,7 +268,7 @@ function updateOstatka(id, rawVal){
   const counted = num(rawVal, {min:0});
   if(counted === null) return;
   const date = todayStr();
-  const incoming = batchesForDate(date).filter(b=>b.productId===id).reduce((s,b)=>s+b.qty,0);
+  const incoming = batchesForDate(date).flatMap(batchItems).filter(it=>it.productId===id).reduce((s,it)=>s+it.qty,0);
   const stockBefore = p.stock || 0;
   const sold = Math.max(0, stockBefore - counted);
   const revenue = sold * (p.price || 0);
@@ -332,34 +332,49 @@ function resetEverything(){
 }
 
 // ---------- Tsex: partiya qo'shish (log bilan) ----------
-function addBatch(id){
-  const input = document.getElementById('batch-'+id);
-  if(!input) return;
-  const qty = num(input.value, {min:1});
-  if(qty === null){ showToast('Miqdorni to\'g\'ri kiriting (1 dan katta)'); return; }
-  const p = state.products[id];
-  if(!p){ showToast('Mahsulot topilmadi'); return; }
+// bitta "partiya" — bir mashinada bir vaqtda kelgan bir nechta mahsulot, hammasi bir vaqt bilan
+function submitPartiya(){
+  const ids = Object.keys(state.products);
+  const items = [];
+  for(const id of ids){
+    const input = document.getElementById('batch-'+id);
+    if(!input) continue;
+    const raw = input.value.trim();
+    if(raw === '') continue;
+    const qty = num(raw, {min:1});
+    if(qty === null){ showToast((state.products[id].name||'') + ' uchun miqdor noto\'g\'ri'); return; }
+    items.push({productId:id, productName: state.products[id].name, qty});
+  }
+  if(items.length === 0){ showToast('Kamida bitta mahsulot miqdorini kiriting'); return; }
+
   const date = todayStr();
   const time = nowTime();
   state.batches.push({
     id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
-    date, time, ts: Date.now(),
-    productId: id, productName: p.name, qty
+    date, time, ts: Date.now(), items
   });
-  p.stock = (p.stock||0) + qty;
-  if(p.orderQty){
-    p.orderQty = Math.max(0, p.orderQty - qty);
-  }
+  items.forEach(it=>{
+    const p = state.products[it.productId];
+    if(!p) return;
+    p.stock = (p.stock||0) + it.qty;
+    if(p.orderQty) p.orderQty = Math.max(0, p.orderQty - it.qty);
+  });
   if(saveState()){
-    input.value = '';
-    showToast(p.name + ': +' + qty + ' ta (' + time + ')');
+    ids.forEach(id=>{ const inp = document.getElementById('batch-'+id); if(inp) inp.value=''; });
+    showToast('Partiya saqlandi: ' + items.length + ' ta mahsulot (' + time + ')');
     render();
   }
+}
+
+// har bir partiyaning ichidagi mahsulotlarini olish (eski, bitta-mahsulotli yozuvlar bilan ham mos)
+function batchItems(b){
+  return b.items || [{productId:b.productId, productName:b.productName, qty:b.qty}];
 }
 
 function batchesForDate(date){
   return state.batches.filter(b => b.date === date).sort((a,b)=> a.ts - b.ts);
 }
+
 
 // ---------- Idishlar (haftalik hisob) ----------
 function addUtensil(){
@@ -504,8 +519,8 @@ function exportCsv(){
 
 // ---------- Voqealar (delegatsiya) ----------
 document.getElementById('main').addEventListener('click', (e)=>{
-  const addBtn = e.target.closest('[data-action="add-batch"]');
-  if(addBtn){ addBatch(addBtn.dataset.id); return; }
+  const submitPartiyaBtn = e.target.closest('[data-action="submit-partiya"]');
+  if(submitPartiyaBtn){ submitPartiya(); return; }
   const delBtn = e.target.closest('[data-action="delete-product"]');
   if(delBtn){ deleteProduct(delBtn.dataset.id); return; }
   const addProdBtn = e.target.closest('[data-action="add-product"]');
@@ -526,7 +541,7 @@ document.getElementById('main').addEventListener('click', (e)=>{
   if(submitUtBtn){ submitUtensilCheck(); return; }
 });
 document.getElementById('main').addEventListener('keydown', (e)=>{
-  if(e.target.matches('input[id^="batch-"]') && e.key==='Enter'){ addBatch(e.target.id.replace('batch-','')); }
+  if(e.target.matches('input[id^="batch-"]') && e.key==='Enter'){ submitPartiya(); }
   if((e.target.id === 'newName' || e.target.id === 'newPrice') && e.key==='Enter'){ addProduct(); }
   // jadval katakchalarida Enter bosilsa, keyingi qatorga o'tkazadi va saqlaydi
   if(e.key === 'Enter' && e.target.classList.contains('cell-input')){
@@ -572,15 +587,18 @@ function render(){
     const todaysBatches = batchesForDate(today);
     const byProductToday = {};
     todaysBatches.forEach(b=>{
-      if(!byProductToday[b.productId]) byProductToday[b.productId] = {qty:0, count:0};
-      byProductToday[b.productId].qty += b.qty;
-      byProductToday[b.productId].count += 1;
+      batchItems(b).forEach(it=>{
+        if(!byProductToday[it.productId]) byProductToday[it.productId] = {qty:0, count:0};
+        byProductToday[it.productId].qty += it.qty;
+        byProductToday[it.productId].count += 1;
+      });
     });
+    const totalToday = todaysBatches.reduce((s,b)=>s+batchItems(b).reduce((s2,it)=>s2+it.qty,0),0);
 
     const ordered = ids.filter(id => (products[id].orderQty||0) > 0);
 
     main.innerHTML = `
-      <div class="card"><div class="muted">Yangi partiya keldi — miqdorni kiriting va qo'shing. Har bir qo'shish vaqti bilan yoziladi.</div></div>
+      <div class="card"><div class="muted">Bir mashinada bir vaqtda kelgan hamma mahsulot miqdorini pastdagi maydonlarga yozing, so'ng bittagina tugma bilan saqlang — hammasi bitta partiya, bir vaqt bilan yoziladi.</div></div>
       ${ordered.length>0 ? `<div class="card" style="border-color:var(--accent)">
         <div class="name">📦 Zakaz qilingan mahsulotlar</div>
         <div class="muted" style="margin-bottom:6px">Boshliq/kassa so'ragan miqdorlar — shularni yuboring</div>
@@ -594,22 +612,28 @@ function render(){
         const low = isLow(p);
         const t = byProductToday[id];
         const order = p.orderQty||0;
-        return `<div class="card">
+        return `<div class="card" style="margin-bottom:8px">
           <div class="row">
             <div class="name">${escapeHtml(p.name)} ${order>0?'<span class="badge">📦 '+order+' ta zakaz</span>':''}</div>
             <div class="stock ${low?'low':''}">${stock} ta ${low?'⚠️':''}</div>
           </div>
-          <div class="qtybox">
-            <input type="number" id="batch-${id}" placeholder="miqdor" min="1" inputmode="numeric">
-            <button data-action="add-batch" data-id="${id}">＋ Qo'shish</button>
-          </div>
-          ${t ? `<div class="muted" style="margin-top:6px">Bugun yuborilgan: <b>${t.qty} ta</b> (${t.count} marta)</div>` : ''}
+          <input type="number" id="batch-${id}" placeholder="shu partiyada nechta keldi" min="1" inputmode="numeric">
+          ${t ? `<div class="muted" style="margin-top:6px">Bugun jami yuborilgan: <b>${t.qty} ta</b></div>` : ''}
         </div>`;
       }).join('')}
-      ${todaysBatches.length>0 ? `<div class="card">
-        <div class="name">Bugungi partiyalar jurnali</div>
+      ${ids.length>0 ? `<button class="full" data-action="submit-partiya">✅ Partiyani saqlash</button>` : ''}
+
+      ${todaysBatches.length>0 ? `<div class="card" style="margin-top:12px">
+        <div class="row"><div class="name">Bugungi partiyalar jurnali</div><span class="pill">${todaysBatches.length} marta · ${totalToday} ta</span></div>
         <div class="divider"></div>
-        ${todaysBatches.slice().reverse().map(b=>`<div class="logrow"><span class="time">${b.time}</span><span>${escapeHtml(b.productName)}</span><span>+${b.qty} ta</span></div>`).join('')}
+        ${todaysBatches.slice().reverse().map(b=>{
+          const its = batchItems(b);
+          const sum = its.reduce((s,it)=>s+it.qty,0);
+          return `<div style="margin-bottom:10px">
+            <div class="row" style="margin-bottom:2px"><span class="time"><b>${b.time}</b></span><span class="muted">${its.length} ta mahsulot, jami ${sum} ta</span></div>
+            ${its.map(it=>`<div class="logrow"><span>${escapeHtml(it.productName)}</span><span>+${it.qty} ta</span></div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>` : ''}
     `;
     return;
@@ -617,15 +641,10 @@ function render(){
 
   if(activeTab === 'tarix'){
     const dayBatches = batchesForDate(tarixDate);
-    const byProduct = {};
-    dayBatches.forEach(b=>{
-      if(!byProduct[b.productId]) byProduct[b.productId] = {name:b.productName, qty:0, count:0};
-      byProduct[b.productId].qty += b.qty;
-      byProduct[b.productId].count += 1;
-    });
-    const totalIncoming = dayBatches.reduce((s,b)=>s+b.qty,0);
+    const totalIncoming = dayBatches.reduce((s,b)=>s+batchItems(b).reduce((s2,it)=>s2+it.qty,0),0);
     const shift = state.shifts[tarixDate];
-    const top = topForDate(tarixDate);
+    // jadval uchun: har bir mahsulot — kelgan, qoldi, sotildi, summasi; ko'p sotilgandan kamiga
+    const tableRows = shift ? [...shift.entries].sort((a,b)=>(b.sold||0)-(a.sold||0)) : [];
 
     main.innerHTML = `
       <div class="card">
@@ -640,25 +659,33 @@ function render(){
       </div>
 
       <div class="card">
-        <div class="row"><div class="name">Kelgan partiyalar</div><span class="pill">${dayBatches.length} marta · ${totalIncoming} ta</span></div>
-        <div class="divider"></div>
-        ${Object.keys(byProduct).length===0 ? '<div class="empty">Bu kunda partiya kelmagan</div>' : Object.values(byProduct).map(p=>
-          `<div class="logrow"><span>${escapeHtml(p.name)}</span><span>${p.count} marta — <b>${p.qty} ta</b></span></div>`
-        ).join('')}
-        ${dayBatches.length>0 ? `<div class="divider"></div><div class="muted">Barcha yozuvlar:</div>
-          ${dayBatches.map(b=>`<div class="logrow"><span class="time">${b.time}</span><span>${escapeHtml(b.productName)}</span><span>+${b.qty} ta</span></div>`).join('')}` : ''}
+        <div class="row"><div class="name">🚚 Kelgan partiyalar</div><span class="pill">${dayBatches.length} marta · ${totalIncoming} ta</span></div>
+        <div class="muted" style="margin:2px 0 8px">Bir mashinada bir vaqtda kelgan mahsulotlar — bitta partiya</div>
+        ${dayBatches.length===0 ? '<div class="empty">Bu kunda partiya kelmagan</div>' : dayBatches.map(b=>{
+          const its = batchItems(b);
+          const sum = its.reduce((s,it)=>s+it.qty,0);
+          return `<div class="card" style="margin-bottom:8px;background:var(--bg)">
+            <div class="row" style="margin-bottom:4px"><span><b>🕐 ${b.time}</b></span><span class="muted">${its.length} ta mahsulot, jami ${sum} ta</span></div>
+            ${its.map(it=>`<div class="logrow"><span>${escapeHtml(it.productName)}</span><span>+${it.qty} ta</span></div>`).join('')}
+          </div>`;
+        }).join('')}
       </div>
 
-      <div class="card">
-        <div class="name">Kunlik natija (smena)</div>
-        <div class="divider"></div>
-        ${!shift ? '<div class="empty">Bu kun uchun hali smena yopilmagan</div>' : `
-          ${top.map((e,i)=>`<div class="${i===0?'top1':'logrow'}">
-            ${i===0?'<span class="badge">🏆 TOP</span>':''}
-            <span>${escapeHtml(e.productName)} — kelgan ${e.incoming}, sotildi <b>${e.sold}</b></span>
-            <span>${fmt(e.revenue)} so'm</span>
-          </div>`).join('')}
-          <div class="totals">Jami: ${fmt(shift.total||0)} so'm</div>
+      <div class="card sheet-wrap" style="${tableRows.length? 'padding:0':''}">
+        ${tableRows.length===0 ? `<div class="name" style="padding:${tableRows.length?0:'0'}">Kunlik natija (smena)</div><div class="empty">Bu kun uchun hali smena yopilmagan</div>` : `
+        <table class="sheet">
+          <thead><tr><th>Mahsulot</th><th>Kelgan</th><th>Qoldi</th><th>Sotildi</th><th>Summasi</th></tr></thead>
+          <tbody>
+            ${tableRows.map((e,i)=>`<tr${i===0?' style="background:rgba(122,154,92,.15)"':''}>
+              <td class="menuname">${i===0?'🏆 ':''}${escapeHtml(e.productName)}</td>
+              <td class="num">${e.incoming}</td>
+              <td class="num">${e.endCounted}</td>
+              <td class="num"><b>${e.sold}</b></td>
+              <td class="num">${fmt(e.revenue)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="totals" style="padding:10px 14px">Jami: ${fmt(shift.total||0)} so'm</div>
         `}
       </div>
     `;
