@@ -64,6 +64,7 @@
   <div class="tab" data-tab="tsex">🏭 Tsex</div>
   <div class="tab" data-tab="tarix">📅 Kunlik</div>
   <div class="tab" data-tab="kassa">🧾 Ostatka</div>
+  <div class="tab" data-tab="idishlar">🍽 Idishlar</div>
   <div class="tab" data-tab="boss">📊 Statistika</div>
 </div>
 <main id="main"></main>
@@ -91,13 +92,15 @@ function loadState(){
       return migrateFromV1(old);
     }
   }catch(e){ /* ignore */ }
-  return { products:{}, batches:[], shifts:{} };
+  return { products:{}, batches:[], shifts:{}, utensils:{}, utensilChecks:{} };
 }
 
 function normalize(s){
   s.products = s.products || {};
   s.batches = s.batches || [];
   s.shifts = s.shifts || {};
+  s.utensils = s.utensils || {};
+  s.utensilChecks = s.utensilChecks || {};
   return s;
 }
 
@@ -210,7 +213,7 @@ function addProduct(){
   const exists = Object.values(state.products).some(p => (p.name||'').trim().toLowerCase() === name.toLowerCase());
   if(exists){ if(errEl) errEl.textContent = 'Bu mahsulot allaqachon mavjud'; return; }
   const id = slug(name);
-  state.products[id] = {name, price, stock:0};
+  state.products[id] = {name, price, stock:0, orderQty:0};
   if(saveState()){
     nameEl.value=''; priceEl.value='';
     showToast('Qo\'shildi: ' + name);
@@ -265,9 +268,27 @@ function addBatch(id){
     productId: id, productName: p.name, qty
   });
   p.stock = (p.stock||0) + qty;
+  if(p.orderQty){
+    p.orderQty = Math.max(0, p.orderQty - qty);
+  }
   if(saveState()){
     input.value = '';
     showToast(p.name + ': +' + qty + ' ta (' + time + ')');
+    render();
+  }
+}
+
+function setOrder(id){
+  const input = document.getElementById('order-'+id);
+  if(!input) return;
+  const raw = input.value.trim();
+  const qty = raw === '' ? 0 : num(raw, {min:0});
+  if(qty === null){ showToast('Zakaz miqdorini to\'g\'ri kiriting'); return; }
+  const p = state.products[id];
+  if(!p) return;
+  p.orderQty = qty;
+  if(saveState()){
+    showToast(qty>0 ? (p.name + ' uchun zakaz: ' + qty + ' ta') : (p.name + ' zakazi bekor qilindi'));
     render();
   }
 }
@@ -276,7 +297,82 @@ function batchesForDate(date){
   return state.batches.filter(b => b.date === date).sort((a,b)=> a.ts - b.ts);
 }
 
-// ---------- Smena yopish ----------
+// ---------- Idishlar (haftalik hisob) ----------
+function addUtensil(){
+  const errEl = document.getElementById('addUtensilError');
+  if(errEl) errEl.textContent = '';
+  const nameEl = document.getElementById('newUtensilName');
+  const priceEl = document.getElementById('newUtensilPrice');
+  const name = nameEl.value.trim();
+  let price = 0;
+  if(priceEl.value.trim() !== ''){
+    const parsed = num(priceEl.value, {min:0, allowFloat:true});
+    if(parsed === null){ if(errEl) errEl.textContent = 'Narx manfiy bo\'lmasligi kerak'; priceEl.focus(); return; }
+    price = parsed;
+  }
+  if(!name){ if(errEl) errEl.textContent = 'Nomini kiriting'; nameEl.focus(); return; }
+  const exists = Object.values(state.utensils).some(u => (u.name||'').trim().toLowerCase() === name.toLowerCase());
+  if(exists){ if(errEl) errEl.textContent = 'Bu allaqachon mavjud'; return; }
+  const startEl = document.getElementById('newUtensilCount');
+  const start = num(startEl.value, {min:0}) || 0;
+  const id = slug(name);
+  state.utensils[id] = {name, price, count:start};
+  if(saveState()){
+    nameEl.value=''; priceEl.value=''; startEl.value='';
+    showToast('Qo\'shildi: ' + name);
+    render();
+  }
+}
+
+function deleteUtensil(id){
+  const u = state.utensils[id];
+  if(!u) return;
+  if(!confirm('O\'chirilsinmi: ' + u.name + '? (Tarix saqlanib qoladi)')) return;
+  delete state.utensils[id];
+  if(saveState()){ showToast('O\'chirildi'); render(); }
+}
+
+function submitUtensilCheck(){
+  const ids = Object.keys(state.utensils);
+  const entries = [];
+  for(const id of ids){
+    const countEl = document.getElementById('ucount-'+id);
+    if(!countEl) continue;
+    const raw = countEl.value.trim();
+    if(raw === '') continue;
+    const counted = num(raw, {min:0});
+    if(counted === null){ showToast((state.utensils[id].name||'') + ' uchun son noto\'g\'ri'); return; }
+    const addedEl = document.getElementById('uadded-'+id);
+    const added = addedEl && addedEl.value.trim() !== '' ? (num(addedEl.value, {min:0})||0) : 0;
+    entries.push({id, counted, added});
+  }
+  if(entries.length === 0){ showToast('Kamida bitta narsa uchun sonini kiriting'); return; }
+
+  const date = todayStr();
+  const newEntries = [];
+  let totalMissing = 0, totalCost = 0;
+  for(const {id, counted, added} of entries){
+    const u = state.utensils[id];
+    if(!u) continue;
+    const before = u.count || 0;
+    const expected = before + added;
+    const missing = Math.max(0, expected - counted);
+    const cost = missing * (u.price || 0);
+    totalMissing += missing;
+    totalCost += cost;
+    newEntries.push({itemId:id, name:u.name, before, added, counted, missing, cost});
+    u.count = counted;
+  }
+  if(newEntries.length === 0){ showToast('Hech narsa saqlanmadi'); return; }
+
+  state.utensilChecks[date] = { entries: newEntries, totalMissing, totalCost, savedAt: Date.now() };
+  if(saveState()){
+    showToast('Haftalik hisobot saqlandi ✅');
+    document.querySelectorAll('input[id^="ucount-"], input[id^="uadded-"]').forEach(i=>i.value='');
+    render();
+  }
+}
+
 function submitShift(){
   if(submitting) return;
   const ids = Object.keys(state.products);
@@ -425,10 +521,19 @@ document.getElementById('main').addEventListener('click', (e)=>{
   if(resetAllBtn){ resetEverything(); return; }
   const exportBtn = e.target.closest('[data-action="export-csv"]');
   if(exportBtn){ exportCsv(); return; }
+  const orderBtn = e.target.closest('[data-action="set-order"]');
+  if(orderBtn){ setOrder(orderBtn.dataset.id); return; }
+  const addUtBtn = e.target.closest('[data-action="add-utensil"]');
+  if(addUtBtn){ addUtensil(); return; }
+  const delUtBtn = e.target.closest('[data-action="delete-utensil"]');
+  if(delUtBtn){ deleteUtensil(delUtBtn.dataset.id); return; }
+  const submitUtBtn = e.target.closest('[data-action="submit-utensil-check"]');
+  if(submitUtBtn){ submitUtensilCheck(); return; }
 });
 document.getElementById('main').addEventListener('keydown', (e)=>{
   if(e.key !== 'Enter') return;
   if(e.target.matches('input[id^="batch-"]')){ addBatch(e.target.id.replace('batch-','')); }
+  if(e.target.matches('input[id^="order-"]')){ setOrder(e.target.id.replace('order-','')); }
   if(e.target.id === 'newName' || e.target.id === 'newPrice'){ addProduct(); }
 });
 document.getElementById('main').addEventListener('change', (e)=>{
@@ -456,17 +561,26 @@ function render(){
       byProductToday[b.productId].count += 1;
     });
 
+    const ordered = ids.filter(id => (products[id].orderQty||0) > 0);
+
     main.innerHTML = `
       <div class="card"><div class="muted">Yangi partiya keldi — miqdorni kiriting va qo'shing. Har bir qo'shish vaqti bilan yoziladi.</div></div>
+      ${ordered.length>0 ? `<div class="card" style="border-color:var(--accent)">
+        <div class="name">📦 Zakaz qilingan mahsulotlar</div>
+        <div class="muted" style="margin-bottom:6px">Boshliq/kassa so'ragan miqdorlar — shularni yuboring</div>
+        <div class="divider"></div>
+        ${ordered.map(id=>`<div class="logrow"><span>${escapeHtml(products[id].name)}</span><span class="pill">${products[id].orderQty} ta kerak</span></div>`).join('')}
+      </div>` : ''}
       ${ids.length===0 ? '<div class="empty">Hali mahsulot yo\'q.<br>Boshliq bo\'limidan qo\'shing.</div>' : ''}
       ${ids.map(id=>{
         const p = products[id];
         const stock = p.stock||0;
         const low = stock <= LOW_STOCK;
         const t = byProductToday[id];
+        const order = p.orderQty||0;
         return `<div class="card">
           <div class="row">
-            <div class="name">${escapeHtml(p.name)}</div>
+            <div class="name">${escapeHtml(p.name)} ${order>0?'<span class="badge">📦 '+order+' ta zakaz</span>':''}</div>
             <div class="stock ${low?'low':''}">${stock} ta ${low?'⚠️':''}</div>
           </div>
           <div class="qtybox">
@@ -550,6 +664,92 @@ function render(){
         </div>`;
       }).join('')}
       ${ids.length>0 ? `<button class="full" id="submitShiftBtn" data-action="submit-shift">✅ Otchyot yuborish</button>` : ''}
+
+      <div class="card">
+        <div class="name">📦 Zakaz berish</div>
+        <div class="muted" style="margin-bottom:6px">Tsexdan qancha kerakligini yozing — ular Tsex sahifasida ko'radi va yuborgach avtomatik yopiladi</div>
+        <div class="divider"></div>
+        ${ids.length===0 ? '<div class="empty">Mahsulot yo\'q.</div>' : ids.map(id=>{
+          const p = products[id];
+          const order = p.orderQty||0;
+          return `<div class="card" style="margin-bottom:8px">
+            <div class="row">
+              <div class="name">${escapeHtml(p.name)}</div>
+              ${order>0 ? `<span class="badge">${order} ta kutilmoqda</span>` : ''}
+            </div>
+            <div class="qtybox">
+              <input type="number" id="order-${id}" placeholder="zakaz miqdori" min="0" inputmode="numeric" value="${order>0?order:''}">
+              <button data-action="set-order" data-id="${id}">💾 Saqlash</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+    return;
+  }
+
+  if(activeTab === 'idishlar'){
+    const uids = Object.keys(state.utensils).sort((a,b)=>
+      (state.utensils[a].name||'').localeCompare(state.utensils[b].name||'', 'uz'));
+    const checkDates = Object.keys(state.utensilChecks).sort().reverse();
+
+    main.innerHTML = `
+      <div class="card">
+        <div class="name">Yangi idish/asbob qo'shish</div>
+        <div class="addform">
+          <input type="text" id="newUtensilName" placeholder="Nomi (masalan: Choy qoshiq)">
+          <input type="number" id="newUtensilPrice" placeholder="Narxi (ixtiyoriy)" min="0">
+          <input type="number" id="newUtensilCount" placeholder="Boshlang'ich soni" min="0">
+          <button data-action="add-utensil">＋ Qo'shish</button>
+        </div>
+        <div class="errmsg" id="addUtensilError"></div>
+      </div>
+
+      <div class="card">
+        <div class="name">Joriy hisob</div>
+        <div class="divider"></div>
+        ${uids.length===0 ? '<div class="empty">Hali idish/asbob qo\'shilmagan</div>' : uids.map(id=>{
+          const u = state.utensils[id];
+          return `<div class="row">
+            <div class="name">${escapeHtml(u.name)}</div>
+            <div class="qtybox">
+              <span class="stock">${u.count||0} ta</span>
+              <button class="ghost" data-action="delete-utensil" data-id="${id}">🗑</button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+
+      <div class="card">
+        <div class="name">📋 Haftalik sanoq</div>
+        <div class="muted" style="margin-bottom:8px">Har juma (yoki xohlagan kuningizda) haqiqiy sonini kiriting. Agar shu hafta yangi narsa sotib olingan bo'lsa, "yangi qo'shilgan" ustuniga yozing — shunda kam chiqqan soni to'g'ri hisoblanadi.</div>
+        ${uids.length===0 ? '<div class="empty">Avval yuqoridan idish/asbob qo\'shing</div>' : uids.map(id=>{
+          const u = state.utensils[id];
+          return `<div class="card" style="margin-bottom:8px">
+            <div class="row"><div class="name">${escapeHtml(u.name)}</div><div class="muted">Oldingi: ${u.count||0} ta</div></div>
+            <div class="qtybox" style="flex-wrap:wrap">
+              <input type="number" id="uadded-${id}" placeholder="yangi qo'shilgan" min="0" inputmode="numeric" style="width:auto;flex:1">
+              <input type="number" id="ucount-${id}" placeholder="hozirgi soni" min="0" inputmode="numeric" style="width:auto;flex:1">
+            </div>
+          </div>`;
+        }).join('')}
+        ${uids.length>0 ? `<button class="full" data-action="submit-utensil-check">✅ Haftalik hisobotni saqlash</button>` : ''}
+      </div>
+
+      <div class="card">
+        <div class="name">Hisobotlar tarixi</div>
+        <div class="divider"></div>
+        ${checkDates.length===0 ? '<div class="empty">Hali hisobot yo\'q</div>' : checkDates.map(d=>{
+          const c = state.utensilChecks[d];
+          return `<div style="margin-bottom:14px">
+            <div style="font-weight:600">${fmtDate(d)}</div>
+            ${c.entries.filter(e=>e.missing>0 || e.added>0).map(e=>
+              `<div class="logrow"><span>${escapeHtml(e.name)}${e.added>0?' (+'+e.added+' yangi)':''}</span><span>${e.missing>0?`<span class="low">kam: ${e.missing} ta</span>`:'to\'liq'}</span></div>`
+            ).join('') || '<div class="muted">Kamchilik yo\'q ✅</div>'}
+            <div class="totals">Jami kam chiqqan: ${c.totalMissing} ta${c.totalCost>0?` · ${fmt(c.totalCost)} so'm`:''}</div>
+          </div>`;
+        }).join('')}
+      </div>
     `;
     return;
   }
